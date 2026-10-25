@@ -406,6 +406,8 @@ export default function (pi: ExtensionAPI) {
 	function deliverAct(note: Note, seen: string[]) {
 		const route = decideActRoute(note, actsThisRun, seen);
 		if (route === "skip") return; // act: none → 只进人可见通道
+		// 第二道去重：调用点（检查流程里 norm 比对 seen+known）已经挡过一次，这里再查一遍，
+		// 保证 decideActRoute 单独被调用时也不会重发。两道都用 norm()，语义一致。
 		if (route === "drop") return void log({ event: "act_dropped", reason: "dedup", line: note.line });
 		if (route === "drop_cap") return void log({ event: "act_dropped", reason: "cap", line: note.line });
 		const message = { customType: WIDGET, content: actMessage(note.act!, note.tag, note.line, note.evidence), display: true, details: { ...note, actDelivered: true } };
@@ -732,7 +734,9 @@ export default function (pi: ExtensionAPI) {
 			const titles = list.map((x, i) => `${i + 1} ${x.tag} \u00b7 ${x.line}`); // 序号保证选项文字唯一
 			const choice = await ctx.ui.select(`You should know \u00b7 ${list.length} pending`, titles);
 			if (!choice) return;
-			n = list[titles.indexOf(choice)];
+			const picked = list[titles.indexOf(choice)];
+			if (!picked) return; // select 返回了不在列表里的值：宁可不处理，也不要动错那条
+			n = picked;
 		}
 		const options = ["1 Learn more", "2 Knew this already", "3 Chat in main session", "0 Dismiss"];
 		const pick = await ctx.ui.select(`${n.tag} \u00b7 ${n.line}`, options);
