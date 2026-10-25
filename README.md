@@ -8,14 +8,24 @@ It's a port of the "you should know" plugin built into Claude Code.
 
 ## Using it
 
-- A note shows up above the editor, like `✦ Heads up · The agent loosened the test threshold from 0.8 to 0.65.`
-- `/ysk` or alt+shift+y: open the top note. You can learn more about it, mark it as something you knew, send it to the agent or dismiss it.
-- alt+x: dismiss the top note.
+- A note shows up above the editor as a single line, like `✦ Heads up · The agent loosened the test threshold from 0.8 to 0.65. +2`. The trailing `+N` counts the notes that are queued but not shown, so the area never grows past one row.
+- `/ysk` or alt+shift+y: open the newest note. You can learn more about it, mark it as something you knew, send it to the agent or dismiss it. Choosing it reveals the full list, newest first, numbered.
+- alt+x: dismiss the newest note.
 - `/ysk off`, `/ysk on`, `/ysk status`: turn it off and on, or see how many checks it has run.
 
 If you keep ignoring notes, it checks less often. Answering any note resets that.
 
 Open notes and answer history are saved with the Pi session. Knew and Undo feedback is saved under `~/.pi/agent/you-should-know/` (or your `PI_CODING_AGENT_DIR`), so separate Pi sessions cannot overwrite one another’s feedback. Relayed child notes stay in the inbox until they appear in the parent’s saved conversation.
+
+## Delivered to the agent
+
+Some notes are not for you alone: the check also decides whether the agent should act on the observation (`act`) and how soon (`urgency`).
+
+- `act: none` (default): the note only appears in the drawer.
+- `act: now` with `urgency: now`: sent into the running conversation the moment the note is produced, so the agent can correct itself before finishing.
+- `act: now` with `urgency: later`: appended once the current run ends. It does not wake an idle agent and does not start a new run by itself.
+
+An injected note is shown to you as a message in the conversation, so the two channels stay visible in one place.
 
 ## In RPC clients
 
@@ -52,4 +62,4 @@ Same-model Claude checks reuse the main request's cached prefix. A different sid
 
 ## Install
 
-    pi install git:github.com/aliceisjustplaying/pi-you-should-know
+    pi install git:github.com/ioOvOoi/pi-you-should-know
