@@ -409,14 +409,16 @@ export default function (pi: ExtensionAPI) {
 		if (route === "drop") return void log({ event: "act_dropped", reason: "dedup", line: note.line });
 		if (route === "drop_cap") return void log({ event: "act_dropped", reason: "cap", line: note.line });
 		const message = { customType: WIDGET, content: actMessage(note.act!, note.tag, note.line, note.evidence), display: true, details: { ...note, actDelivered: true } };
-		try {
-			if (route === "steer") pi.sendMessage(message, { deliverAs: "steer" }); // urgency: now → 塞进正在跑的轮次
-			else pi.sendMessage(message); // urgency: later → 只落盘不唤醒
-			actsThisRun++;
-			log({ event: "act_injected", line: note.line, urgency: note.urgency ?? "later", deliverAs: route === "steer" ? "steer" : "persisted" });
-		} catch (err) {
-			log({ event: "act_dropped", reason: "send_failed", line: note.line, error: String(err) });
-		}
+		// urgency: later 必须显式带 triggerTurn: false。pi 的判定顺序是
+		// isStreaming && triggerTurn !== false → agent.steer()，只传 message 会被当成 steer 立刻插进当前轮。
+		// 带 triggerTurn: false 后，streaming 时进 _pendingCustomMessages 等本轮结束再落盘，空闲时直接追加。
+		const delivery = route === "steer" ? { deliverAs: "steer" as const } : { triggerTurn: false as const };
+		actsThisRun++;
+		// sendMessage 返回 Promise，同步 try/catch 抓不到拒绝，必须挂 catch，否则失败是 unhandled rejection、且不留记录。
+		void Promise.resolve(pi.sendMessage(message, delivery)).then(
+			() => log({ event: "act_injected", line: note.line, urgency: note.urgency ?? "later", deliverAs: route === "steer" ? "steer" : "append" }),
+			(err: unknown) => log({ event: "act_dropped", reason: "send_failed", line: note.line, error: String(err) }),
+		);
 	}
 
 	function relayToParent(n: { line: string; tag: Tag; evidence?: string; explanation?: string; from: string }) {
@@ -727,7 +729,7 @@ export default function (pi: ExtensionAPI) {
 		const list = [...notes].reverse();
 		let n = list[0];
 		if (list.length > 1) {
-			const titles = list.map((x) => `${x.tag} \u00b7 ${x.line}`);
+			const titles = list.map((x, i) => `${i + 1} ${x.tag} \u00b7 ${x.line}`); // 序号保证选项文字唯一
 			const choice = await ctx.ui.select(`You should know \u00b7 ${list.length} pending`, titles);
 			if (!choice) return;
 			n = list[titles.indexOf(choice)];

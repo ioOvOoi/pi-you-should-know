@@ -197,11 +197,19 @@ const seeded = (session, lines) => open(session, lines.map((line, i) => ({ id: `
 
 test('with several pending notes ysk lists all of them, newest first, and acts on the picked one', async () => {
   const client = seeded('menu', ['Older note.', 'Newer note.']);
-  client.answers.push('You should know · Newer note.', '0 Dismiss');
+  client.answers.push('1 You should know · Newer note.', '0 Dismiss');
   await client.command();
-  assert.deepEqual(client.selects[0].options, ['You should know · Newer note.', 'You should know · Older note.']);
+  assert.deepEqual(client.selects[0].options, ['1 You should know · Newer note.', '2 You should know · Older note.']);
   assert.deepEqual(client.selects[1].options, ['1 Learn more', '2 Knew this already', '3 Chat in main session', '0 Dismiss']);
   assert.deepEqual(client.saved().notes.map((n) => n.line), ['Older note.']); // 点开哪条就处理哪条
+  client.close();
+});
+
+test('两条内容完全相同的笔记：点第二项处理的是第二项，不是第一项', async () => {
+  const client = seeded('dup', ['Same.', 'Same.']);
+  client.answers.push('2 You should know · Same.', '0 Dismiss');
+  await client.command();
+  assert.deepEqual(client.saved().notes.map((n) => n.id), ['n1']); // 列表最新在前：第 2 项 = n0，被关掉后剩 n1
   client.close();
 });
 

@@ -175,9 +175,11 @@ test('act with urgency later persists without waking the agent', { timeout: 30_0
     const delivered = f.waitFor((event) => event.type === 'message_end' && event.message?.customType === 'you-should-know');
     const injected = f.entries().find((entry) => entry.event === 'act_injected');
     assert.ok(injected, JSON.stringify(f.entries()));
-    assert.equal(injected.deliverAs, 'persisted');
+    assert.equal(injected.deliverAs, 'append');
     await delivered;
     await new Promise((resolve) => setTimeout(resolve, 1_000));
+    // 不唤醒 = 不新起一个 run。注意：本轮结束时会追加进会话记录，所以后续请求仍能看到它，
+    // 这是「落盘」的应有语义，不要为了「证明没注入」而去断言 payload 里不含声明头——那个断言在正确实现下也会失败。
     assert.equal(f.events.filter((event) => event.type === 'agent_start').length, 1, 'the persisted act must not start a new run');
     await f.stop();
     await f.open(); // 重启后消息仍在会话记录里
@@ -203,7 +205,7 @@ test('per-run cap drops the third act and a repeated line drops its act, both au
     assert.deepEqual(outcomes, ['shown', 'deduped', 'shown', 'shown'], JSON.stringify(outcomes));
     const injected = f.entries().filter((entry) => entry.event === 'act_injected');
     assert.equal(injected.length, 2, 'two acts per run');
-    assert.deepEqual(injected.map((entry) => entry.deliverAs), ['steer', 'persisted']);
+    assert.deepEqual(injected.map((entry) => entry.deliverAs), ['steer', 'append']);
     const dropped = f.entries().filter((entry) => entry.event === 'act_dropped');
     assert.deepEqual(dropped.map((entry) => entry.reason), ['dedup', 'cap']);
     assert.equal(dropped[0].line, 'The fixture found problem one.');
