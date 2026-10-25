@@ -18,7 +18,7 @@ import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { DynamicBorder, getMarkdownTheme } from "@earendil-works/pi-coding-agent";
-import { Container, Markdown, matchesKey, Text } from "@earendil-works/pi-tui";
+import { Container, Markdown, matchesKey, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 // ---- constants copied from the CC mod ----
 const CHECK_EVERY_STEPS = 6; // var kr=6
@@ -27,6 +27,7 @@ const MAX_SKIP = 16; // var dt=16
 const FREE_IGNORES = 2; // var ut=2
 const HISTORY_MAX = 50; // var $t=50
 const MAX_NOTES = 5; // local: notes pile up until answered; oldest drops past this
+const MAX_ACTS_PER_RUN = 2; // 每次 run 最多直推 2 条（steer 与落盘合计），再糟糕的判定也不刷屏
 const backoff = (ignoredInARow: number) =>
 	ignoredInARow <= FREE_IGNORES ? 0 : Math.min(MAX_SKIP, 2 ** (ignoredInARow - FREE_IGNORES - 1)); // kn()
 
@@ -130,10 +131,10 @@ function log(entry: Record<string, unknown>) {
 
 // ---- output parsing (the CC mod's Cr()) ----
 type Tag = "You should know" | "Heads up";
-type Note = { id: string; line: string; tag: Tag; evidence?: string; explanation?: string; from?: string; shownAt: number; promptsSurvived: number; countedIgnored?: boolean };
-type Parsed = { kind: "none" } | { kind: "parse_failed" } | { kind: "line"; line: string; tag: Tag; evidence?: string; explanation?: string };
+type Note = { id: string; line: string; tag: Tag; evidence?: string; act?: string; urgency?: "now" | "later"; explanation?: string; from?: string; shownAt: number; promptsSurvived: number; countedIgnored?: boolean };
+type Parsed = { kind: "none" } | { kind: "parse_failed" } | { kind: "line"; line: string; tag: Tag; evidence?: string; act?: string; urgency?: "now" | "later"; explanation?: string };
 const strip = (s: string) => s.replace(/^[\s>*_`"'\u201C\u201D\u2018\u2019-]+/, "");
-function parse(text: string): Parsed {
+export function parse(text: string, warn?: (entry: Record<string, unknown>) => void): Parsed {
 	const lines = text.split("\n");
 	const li = lines.findIndex((l) => /^learn\s*:/i.test(strip(l)));
 	if (li === -1) return { kind: "parse_failed" };
@@ -145,14 +146,66 @@ function parse(text: string): Parsed {
 	const vi = lines.findIndex((l, i) => i > li && (ei === -1 || i < ei) && /^evidence\s*:/i.test(strip(l)));
 	const ev = vi === -1 ? "" : strip(lines[vi]).replace(/^evidence\s*:\s*/i, "").trim();
 	const evidence = ev && !/^none\.?$/i.test(ev) ? ev : undefined;
+	// act/urgency 必须排在 explain 之前：explain 会吞掉其后所有行，之后的 act:/urgency: 字样属于解释正文。
+	const ai = lines.findIndex((l, i) => i > li && (ei === -1 || i < ei) && /^act\s*:/i.test(strip(l)));
+	const av = ai === -1 ? "" : strip(lines[ai]).replace(/^act\s*:\s*/i, "").replace(/[*_`\s]+$/, "").trim();
+	const act = av && !/^none\.?$/i.test(av) ? av : undefined;
+	const ui = lines.findIndex((l, i) => i > li && (ei === -1 || i < ei) && /^urgency\s*:/i.test(strip(l)));
+	const uv = ui === -1 ? "" : strip(lines[ui]).replace(/^urgency\s*:\s*/i, "").trim();
+	// urgency 缺失/非法一律保守按 later（宁可不唤醒，不可误唤醒）；只在 act 非 none 时记日志。
+	let urgency: "now" | "later" = "later";
+	if (/^now\.?$/i.test(uv)) urgency = "now";
+	else if (act !== undefined && !/^later\.?$/i.test(uv)) warn?.({ event: "act_urgency_defaulted", reason: ui === -1 ? "missing" : "invalid", value: uv, line });
 	let explanation: string | undefined;
 	if (ei !== -1) {
 		const first = strip(lines[ei]).replace(/^explain\s*:\s*/i, "");
 		explanation = [first, ...lines.slice(ei + 1)].join("\n").trim() || undefined;
 	}
-	return { kind: "line", line, tag, evidence, explanation };
+	return { kind: "line", line, tag, evidence, act, urgency, explanation };
 }
 const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim(); // Co()
+
+type ActRoute = "skip" | "steer" | "persist" | "drop" | "drop_cap";
+/**
+ * 判断直推的路由决策：纯函数，完全由 act/urgency 决定，不读忙/闲状态（正在跑还是空闲由投递机制自己排队）。
+ * seen 是判定开始前的 state.seen 快照：被去重的观察宁可漏发、绝不重发。
+ */
+export function decideActRoute(note: { line: string; act?: string; urgency?: "now" | "later" }, actsThisRun: number, seen: Iterable<string>): ActRoute {
+	if (note.act === undefined) return "skip"; // act: none（含缺失）→ 只进人可见通道
+	if ([...seen].some((x) => norm(x) === norm(note.line))) return "drop";
+	if (actsThisRun >= MAX_ACTS_PER_RUN) return "drop_cap";
+	return note.urgency === "now" ? "steer" : "persist"; // urgency 缺失/非法按 later 保守处理
+}
+
+const ACT_HEADER = "\u8FD9\u662F\u4FA7 agent \u7684\u89C2\u5BDF\uFF0C\u5148\u9A8C\u8BC1\u518D\u6539\uFF0C\u5224\u65AD\u9519\u5C31\u76F4\u63A5\u8BF4\u9519\u3002"; // 这是侧 agent 的观察，先验证再改，判断错就直接说错。
+/** 判断直推的注入文本：固定声明头开头，随后 act 句，最后附 tag/line 与 evidence 作为依据。steer 与落盘共用。 */
+export function actMessage(act: string, tag: Tag, line: string, evidence?: string): string {
+	return [
+		ACT_HEADER,
+		"",
+		`act: ${act}`,
+		"",
+		`${tag} \u00b7 ${line}`,
+		...(evidence ? [`Evidence: ${evidence}`] : []),
+	].join("\n");
+}
+
+type DrawerTheme = { fg(color: string, text: string): string; bold(text: string): string };
+const oneLine = (s: string) => s.replace(/[\r\n]+/g, " "); // 抽屉恒一行：换行一律折成空格
+/** 抽屉单行渲染：最新一条笔记截断成一行，行尾 +N 计数其余积压（N 为 0 不加）。恒返回一行。 */
+export function drawerLine(notes: Note[], width: number, theme: DrawerTheme): string {
+	if (notes.length === 0) return "";
+	const n = notes[notes.length - 1]; // 队列按到达顺序（旧在前），显示最新一条
+	const from = n.from ? oneLine(` (${n.from})`) : "";
+	const rest = notes.length - 1;
+	const suffixPlain = rest > 0 ? ` +${rest}` : "";
+	const body = theme.fg("accent", "\u2726 ") + theme.fg("accent", theme.bold(oneLine(n.tag))) + (from ? theme.fg("dim", from) : "") + theme.fg("dim", " \u00b7 ") + oneLine(n.line);
+	if (!suffixPlain) return truncateToWidth(body, width);
+	// 先预留行尾 +N 的可见宽度，再截断正文。
+	const budget = width - visibleWidth(suffixPlain);
+	if (budget <= 0) return truncateToWidth(theme.fg("dim", suffixPlain), width); // 极窄宽度下只留计数，仍是一行
+	return truncateToWidth(body, budget) + theme.fg("dim", suffixPlain);
+}
 
 const textOf = (msg: { content: unknown }) =>
 	Array.isArray(msg.content)
@@ -165,11 +218,16 @@ const textOf = (msg: { content: unknown }) =>
 
 export default function (pi: ExtensionAPI) {
 	let state = loadState();
-	let notes: Note[] = []; // oldest first; notes[0] is the one /ysk and alt+x act on
+	let notes: Note[] = []; // oldest first; the newest one is what the drawer shows and alt+x closes
 	let answered = new Map<string, { note: Note; action: string }>();
 	let inFlight: AbortController | undefined;
 	let promptCounter = 0; // stands in for CC's turnId staleness check
 	let checks = 0;
+	// 判断直推的每 run 计数：steer 与落盘合计最多 MAX_ACTS_PER_RUN 条。
+	// run 边界取 agent_start（AgentStartEvent：「Fired when an agent loop starts」，
+	// pi-coding-agent dist/core/extensions/types.d.ts:745，注册签名 :1208），一次 run 只发一次。
+	let actsThisRun = 0;
+	pi.on("agent_start", () => { actsThisRun = 0; });
 	const remember = (line: string, known: boolean) => {
 		mkdirSync(dirname(KNOWLEDGE_FILE), { recursive: true });
 		appendFileSync(KNOWLEDGE_FILE, "\n" + JSON.stringify({ line, known }) + "\n");
@@ -215,17 +273,11 @@ export default function (pi: ExtensionAPI) {
 			ctx.ui.setWidget(WIDGET, undefined);
 			return;
 		}
-		const shown = [...notes];
-		ctx.ui.setWidget(WIDGET, (_tui, theme) => {
-			const c = new Container();
-			shown.forEach((n, i) => {
-				const mark = i === 0 ? theme.fg("accent", "\u2726 ") : theme.fg("dim", "\u2727 ");
-				const tag = i === 0 ? theme.fg("accent", theme.bold(n.tag)) : theme.fg("dim", n.tag);
-				const from = n.from ? theme.fg("dim", ` (${n.from})`) : "";
-				c.addChild(new Text(mark + tag + from + theme.fg("dim", " \u00b7 ") + n.line, 0, 0));
-			});
-			return c;  // (no key hint line: alt+x dismisses, /ysk or alt+shift+y responds)
-		});
+		ctx.ui.setWidget(WIDGET, (_tui, theme) => ({
+			// Pi 每行渲染后重置样式，样式在每次 render 里逐行重上。
+			render: (width: number) => [drawerLine(notes, width, theme)],
+			invalidate: () => {},  // (no key hint line: alt+x dismisses, /ysk or alt+shift+y responds)
+		}));
 	};
 
 	const clearNotes = (ctx: ExtensionContext) => {
@@ -233,10 +285,9 @@ export default function (pi: ExtensionAPI) {
 		render(ctx);
 	};
 
-	const popNote = (ctx: ExtensionContext) => {
-		const n = notes.shift();
+	const removeNote = (ctx: ExtensionContext, n: Note) => {
+		notes = notes.filter((x) => x !== n);
 		render(ctx);
-		return n;
 	};
 
 	async function fork(ctx: ExtensionContext, llmMessages: any[], prompt: string, signal: AbortSignal) {
@@ -347,6 +398,27 @@ export default function (pi: ExtensionAPI) {
 		return i;
 	};
 
+	/**
+	 * 判断直推（B）：把 act 句投给主 agent。与人可见通道（抽屉/notify）正交，互不抑制。
+	 * 护栏一：调用前 state.seen 已写入 line，发送失败也不回滚（宁可漏发，不许重发）。
+	 * 护栏二：每 run 最多 MAX_ACTS_PER_RUN 条，超限 drop_cap 丢弃并记日志，不排队补发。
+	 */
+	function deliverAct(note: Note, seen: string[]) {
+		const route = decideActRoute(note, actsThisRun, seen);
+		if (route === "skip") return; // act: none → 只进人可见通道
+		if (route === "drop") return void log({ event: "act_dropped", reason: "dedup", line: note.line });
+		if (route === "drop_cap") return void log({ event: "act_dropped", reason: "cap", line: note.line });
+		const message = { customType: WIDGET, content: actMessage(note.act!, note.tag, note.line, note.evidence), display: true, details: { ...note, actDelivered: true } };
+		try {
+			if (route === "steer") pi.sendMessage(message, { deliverAs: "steer" }); // urgency: now → 塞进正在跑的轮次
+			else pi.sendMessage(message); // urgency: later → 只落盘不唤醒
+			actsThisRun++;
+			log({ event: "act_injected", line: note.line, urgency: note.urgency ?? "later", deliverAs: route === "steer" ? "steer" : "persisted" });
+		} catch (err) {
+			log({ event: "act_dropped", reason: "send_failed", line: note.line, error: String(err) });
+		}
+	}
+
 	function relayToParent(n: { line: string; tag: Tag; evidence?: string; explanation?: string; from: string }) {
 		try {
 			mkdirSync(CHILD_INBOX!, { recursive: true });
@@ -418,6 +490,7 @@ export default function (pi: ExtensionAPI) {
 			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 		}
 		promptCounter = 0;
+		actsThisRun = 0;
 		render(ctx);
 		if (inboxTimer) clearInterval(inboxTimer);
 		inboxTimer = undefined;
@@ -495,9 +568,13 @@ export default function (pi: ExtensionAPI) {
 				else if (r.stopReason === "error") outcome = "error";
 				else if (!r.text) outcome = "empty";
 				else {
-					const p = parse(r.text);
+					const p = parse(r.text, (entry) => log(entry));
 					if (p.kind !== "line") outcome = p.kind;
-					else if ([...seen, ...known].some((x) => norm(x) === norm(p.line))) outcome = "deduped";
+					else if ([...seen, ...known].some((x) => norm(x) === norm(p.line))) {
+						outcome = "deduped";
+						// 同一条观察的 act 一并去重：宁可漏发，不许重发。
+						if (p.act !== undefined) log({ event: "act_dropped", reason: "dedup", line: p.line });
+					}
 					else if (promptCounter !== askedAt) outcome = "stale";
 					else {
 						outcome = "shown";
@@ -517,7 +594,9 @@ export default function (pi: ExtensionAPI) {
 							outcome = "relayed";
 							return;
 						}
-						const note: Note = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), line: p.line, tag: p.tag, evidence: p.evidence, explanation: p.explanation, shownAt: Date.now(), promptsSurvived: 0 };
+						const note: Note = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), line: p.line, tag: p.tag, evidence: p.evidence, act: p.act, urgency: p.urgency, explanation: p.explanation, shownAt: Date.now(), promptsSurvived: 0 };
+						// 直推不额外生成 explain；urgency: now 要抢在下面的解释 fork 之前送达。
+						deliverAct(note, seen);
 						if (ctx.mode !== "tui" && !note.explanation) {
 							// The client's "Explain" has nothing to ask, so write the explanation now.
 							try {
@@ -644,15 +723,19 @@ export default function (pi: ExtensionAPI) {
 			ctx.ui.notify("Answer notes where your client shows them.", "info");
 			return;
 		}
-		const n = notes[0];
+		// 展开查看全部笔记走既有 select 通道：最新在前（抽屉显示的那条即首项），点开哪条就处理哪条。
+		const list = [...notes].reverse();
+		let n = list[0];
+		if (list.length > 1) {
+			const titles = list.map((x) => `${x.tag} \u00b7 ${x.line}`);
+			const choice = await ctx.ui.select(`You should know \u00b7 ${list.length} pending`, titles);
+			if (!choice) return;
+			n = list[titles.indexOf(choice)];
+		}
 		const options = ["1 Learn more", "2 Knew this already", "3 Chat in main session", "0 Dismiss"];
 		const pick = await ctx.ui.select(`${n.tag} \u00b7 ${n.line}`, options);
 		if (!pick) return;
-		if (notes[0] === n) popNote(ctx);
-		else {
-			notes = notes.filter((x) => x !== n);
-			render(ctx);
-		}
+		removeNote(ctx, n);
 		state.ignoredInARow = 0;
 		state.skip = 0;
 		const k = pick[0];
@@ -696,8 +779,9 @@ export default function (pi: ExtensionAPI) {
 
 	// One keystroke: dismiss the top note, no menu.
 	function quickDismiss(ctx: ExtensionContext) {
-		const n = popNote(ctx);
+		const n = notes[notes.length - 1]; // 抽屉显示的就是最新这条，一键关掉它
 		if (!n) return;
+		removeNote(ctx, n);
 		state.ignoredInARow = 0;
 		state.skip = 0;
 		saveState(state);

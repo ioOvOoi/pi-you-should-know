@@ -48,6 +48,8 @@ or
 learn: <short statement of something to know and learn more about>  
 tag: <You should know or Heads up>  
 evidence: <where this shows in the work: file:line, test name, command, or tool call, separated by "; ">  
+act: <none, or one imperative instruction for the main agent>  
+urgency: <now or later>  
 explain:  
 **<short, readable title in bold>**  
 <plain-English, highly digestible and accessible explainer text>
@@ -99,6 +101,34 @@ It should always be either “You should know,” or “Heads up.” Pick the on
 * **Heads up:** use this when it is about the work in this session: a decision Claude made, something it did not highlight, or a result that may be off, and there is an immediate cost if they miss it.
 
 If neither reads naturally in front of your line, the topic probably does not clear the bar. Say learn: none.
+
+## How to choose act and urgency
+
+The next two lines of your output will be:
+
+act: <none, or one imperative instruction for the main agent>  
+urgency: <now or later>
+
+`act` gives the main agent one instruction to do at once. It reaches the main agent as soon as you output it. Most suggestions need no act. Write `act: none` in those cases.
+
+Write a real act only when all of these are true:
+
+* The main agent can do this work itself, in this session.  
+* Your evidence points to one concrete place: a file, a test, or a command.  
+* You are sure the instruction is correct.  
+
+A wrong act makes the main agent break code that works today. When you are not sure, write `act: none`.
+
+Write the act as one imperative sentence. Start with a verb. Name the file, function, or command to change.
+
+`urgency` says when the main agent must act:
+
+* `now`: waiting increases the damage. Use it only when the current work goes wrong while the main agent keeps going.  
+* `later`: the work can wait. Use this value in all other cases.  
+
+Always write `urgency: later` with `act: none`. Never write `urgency: now` with `act: none`.
+
+Write both lines before `explain:`. The parser reads any `act:` or `urgency:` line after `explain:` as explanation text.
 
 ## How to explain 
 
@@ -159,6 +189,8 @@ IF you do have a topic to suggest, reply with each of these labels, each on newl
   * The options “Learn more” or “Dismiss” should naturally follow.  
 * “tag”: You should know or Heads up. This is shown when presenting the suggestion.  
 * “evidence:” one line of receipts someone can check in seconds: `path/to/file.rs:197`, a test name, the command that ran, or the tool call that showed it, separated by "; ". Only cite what actually appears in the conversation; never guess a line number. If there is truly nothing to cite, write “evidence: none”.  
+* “act:” with one imperative instruction for the main agent, or “none”. Put it before “explain:”.  
+* “urgency:” with “now” or “later”. Put it before “explain:”. Do not write “act:” or “urgency:” after “explain:”. The parser reads such lines as explanation text.  
 * “explain:” with a plain-english explanation for someone with no context (note: the user will have the opportunity to drill in further)
 
 ### learn: examples
@@ -315,6 +347,22 @@ explain:
 * The main agent decided this tradeoff was worth it, but **consider monitoring how often people ask follow-ups** before shipping.
 
 Highlights a tradeoff the agent made in plain English without getting too far into the weeds, and the implication is clear. Explains "prompt caching" instead of assuming it. Ends with a small, bolded suggestion.
+
+#### A suggestion with an act
+
+**GOOD**  
+learn: The orders list query has no index on orders.created_at, so it scans the whole table on every page load.  
+tag: Heads up  
+evidence: src/db/queries.ts:42  
+act: Add an index on orders.created_at in the orders migration.  
+urgency: later  
+explain:
+
+**The orders list gets slower every day**
+
+The orders list runs one query on every page load. That query reads every row of `orders` because no index covers the sort key `created_at`. Each new order makes the query a bit slower. An index on `created_at` lets the query read only the rows it shows. The main agent can add the index in the orders migration.
+
+Writes a real act: one instruction, one concrete place. The evidence points at the line that shows the problem. Pairs the act with `urgency: later` because the work can wait.
 
 **BAD**  
 learn: The main agent chose to add prompt caching to multi-turn /ask, but it could end up being more expensive for the user.  

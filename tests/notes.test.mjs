@@ -8,10 +8,22 @@ import { registerHooks, syncBuiltinESMExports } from 'node:module';
 const home = mkdtempSync(join(tmpdir(), 'ysk-test-'));
 after(() => rmSync(home, { recursive: true, force: true }));
 const data = (source) => `data:text/javascript,${encodeURIComponent(source)}`;
+// 宽度函数桩：ASCII/ANSI 输入下与 pi-tui 真实现同宽（扩展实现禁止用 .length，这里量的是可见宽度）。
+const widthStub = `
+  export const visibleWidth = (str) => str.replace(/\\x1b\\[[0-9;]*m/g, '').length;
+  export const truncateToWidth = (text, maxWidth, ellipsis = '...', pad = false) => {
+    const width = visibleWidth(text);
+    if (maxWidth <= 0) return '';
+    if (width <= maxWidth) return pad ? text + ' '.repeat(maxWidth - width) : text;
+    const ew = visibleWidth(ellipsis);
+    if (ew >= maxWidth) return ellipsis.slice(0, maxWidth);
+    return text.slice(0, maxWidth - ew) + ellipsis;
+  };
+`;
 registerHooks({ resolve(specifier, context, next) {
   if (specifier === 'node:os') return { url: data(`export const homedir = () => ${JSON.stringify(home)}`), shortCircuit: true };
   if (specifier === '@earendil-works/pi-coding-agent') return { url: data('export class DynamicBorder {}; export const getMarkdownTheme = () => ({})'), shortCircuit: true };
-  if (specifier === '@earendil-works/pi-tui') return { url: data('export class Container {}; export class Markdown {}; export class Text {}; export const matchesKey = () => false'), shortCircuit: true };
+  if (specifier === '@earendil-works/pi-tui') return { url: data(`export class Container {}; export class Markdown {}; export class Text {}; export const matchesKey = () => false;${widthStub}`), shortCircuit: true };
   return next(specifier, context);
 }});
 const { default: extension } = await import(process.env.YSK_TEST_SOURCE ?? '../extensions/you-should-know/index.ts');
