@@ -81,7 +81,7 @@ test('the old learn/tag/evidence/explain format without act still parses', () =>
 
 // ---- (b) 路由决策纯函数 + 护栏 ----
 
-test('decideActRoute routes only on act and urgency, never on busy state', () => {
+test('decideActRoute routes on act and urgency', () => {
   assert.equal(decideActRoute({ line: 'A thing.', urgency: 'now' }, 0, []), 'skip'); // act 缺失 → 只进人可见通道
   assert.equal(decideActRoute({ line: 'A thing.', act: 'Fix it.', urgency: 'now' }, 0, []), 'steer');
   assert.equal(decideActRoute({ line: 'A thing.', act: 'Fix it.', urgency: 'later' }, 0, []), 'persist');

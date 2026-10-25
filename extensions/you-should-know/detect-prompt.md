@@ -104,12 +104,12 @@ If neither reads naturally in front of your line, the topic probably does not cl
 
 ## How to choose act and urgency
 
-The next two lines of your output will be:
+When you have a topic, write these two lines after `evidence:`. When you write `learn: none`, write no `act` and no `urgency`.
 
 act: <none, or one imperative instruction for the main agent>  
 urgency: <now or later>
 
-`act` gives the main agent one instruction to do at once. It reaches the main agent as soon as you output it. Most suggestions need no act. Write `act: none` in those cases.
+`act` tells the main agent what to change. Write `urgency: now` when the main agent must act at once. Write `urgency: later` when the work can wait. Most suggestions need no act. Write `act: none` in those cases.
 
 Write a real act only when all of these are true:
 

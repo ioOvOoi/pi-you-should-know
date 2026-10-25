@@ -148,7 +148,7 @@ export function parse(text: string, warn?: (entry: Record<string, unknown>) => v
 	const evidence = ev && !/^none\.?$/i.test(ev) ? ev : undefined;
 	// act/urgency 必须排在 explain 之前：explain 会吞掉其后所有行，之后的 act:/urgency: 字样属于解释正文。
 	const ai = lines.findIndex((l, i) => i > li && (ei === -1 || i < ei) && /^act\s*:/i.test(strip(l)));
-	const av = ai === -1 ? "" : strip(lines[ai]).replace(/^act\s*:\s*/i, "").replace(/[*_`\s]+$/, "").trim();
+	const av = ai === -1 ? "" : strip(lines[ai]).replace(/^act\s*:\s*/i, "").trim();
 	const act = av && !/^none\.?$/i.test(av) ? av : undefined;
 	const ui = lines.findIndex((l, i) => i > li && (ei === -1 || i < ei) && /^urgency\s*:/i.test(strip(l)));
 	const uv = ui === -1 ? "" : strip(lines[ui]).replace(/^urgency\s*:\s*/i, "").trim();
@@ -203,7 +203,7 @@ export function drawerLine(notes: Note[], width: number, theme: DrawerTheme): st
 	if (!suffixPlain) return truncateToWidth(body, width);
 	// 先预留行尾 +N 的可见宽度，再截断正文。
 	const budget = width - visibleWidth(suffixPlain);
-	if (budget <= 0) return truncateToWidth(theme.fg("dim", suffixPlain), width); // 极窄宽度下只留计数，仍是一行
+	if (budget <= 0) return truncateToWidth(theme.fg("dim", suffixPlain), width); // 极窄宽度下计数也放不下，退化为省略号，仍是一行
 	return truncateToWidth(body, budget) + theme.fg("dim", suffixPlain);
 }
 
@@ -276,7 +276,7 @@ export default function (pi: ExtensionAPI) {
 		ctx.ui.setWidget(WIDGET, (_tui, theme) => ({
 			// Pi 每行渲染后重置样式，样式在每次 render 里逐行重上。
 			render: (width: number) => [drawerLine(notes, width, theme)],
-			invalidate: () => {},  // (no key hint line: alt+x dismisses, /ysk or alt+shift+y responds)
+			invalidate: () => {},  // 无快捷键提示行：alt+x 直接关闭，/ysk 或 alt+shift+y 展开
 		}));
 	};
 
